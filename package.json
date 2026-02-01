@@ -10,6 +10,7 @@
     "onCommand:extension.openWindows"
   ],
   "main": "./src/extension.js",
+  "icon": "icon.png",
   "contributes": {
     "commands": [
       {
