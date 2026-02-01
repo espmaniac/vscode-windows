@@ -1,0 +1,24 @@
+{
+  "name": "Windows",
+  "displayName": "Windows",
+  "publisher": "espmaniac",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "activationEvents": [
+    "onCommand:extension.openWindows"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "extension.openWindows",
+        "title": "Open Windows"
+      }
+    ]
+  },
+  "scripts": {
+    "start": "echo Run F5 in VS Code to debug extension"
+  }
+}
