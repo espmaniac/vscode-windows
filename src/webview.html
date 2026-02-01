@@ -25,6 +25,7 @@ const vscode = acquireVsCodeApi();
 let windowCount=0, zIndex=1, panX=0, panY=0, zoom=1;
 const MIN_ZOOM=0.3, MAX_ZOOM=2.5, ZOOM_STEP=0.1, MIN_WIDTH=100, MIN_HEIGHT=50;
 const workspace=document.getElementById('workspace');
+const editors = {}; // Store editors
 
 function updateTransform(){workspace.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;}
 function zoomAt(cx,cy,nextZoom){nextZoom=Math.min(MAX_ZOOM,Math.max(MIN_ZOOM,nextZoom));
@@ -34,7 +35,6 @@ function zoomAt(cx,cy,nextZoom){nextZoom=Math.min(MAX_ZOOM,Math.max(MIN_ZOOM,nex
 
 require.config({paths:{vs:'https://unpkg.com/monaco-editor@0.45.0/min/vs'}});
 require(['vs/editor/editor.main'],()=>{
-    const editors={};
 
     function makeDraggable(win,title){
         let dragging=false,startX,startY,startLeft,startTop;
@@ -89,6 +89,8 @@ require(['vs/editor/editor.main'],()=>{
     }
 
     function createWindow(fileId,fileName,initialText){
+        if(editors[fileId]) return; // avoid duplicates
+
         const win=document.createElement('div'); win.className='window';
         win.style.left=300+windowCount*40+'px'; win.style.top=300+windowCount*40+'px';
         win.style.zIndex=++zIndex; windowCount++;
@@ -106,7 +108,10 @@ require(['vs/editor/editor.main'],()=>{
         });
         applyVSCodeTheme();
 
-        editor.onDidChangeModelContent(()=>{vscode.postMessage({type:'edit',id:fileId,text:editor.getValue()});});
+        editor.onDidChangeModelContent(e=>{
+            // Send only if source is not vscode to avoid loop
+            vscode.postMessage({type:'edit',id:fileId,text:editor.getValue(), source:'monaco'});
+        });
         editors[fileId]={editor,win};
 
         makeDraggable(win,title);
@@ -138,6 +143,22 @@ require(['vs/editor/editor.main'],()=>{
                 editor.dispose();
                 win.remove();
                 delete editors[fileId];
+            }
+        }
+        if(msg.type==='update' && msg.source==='vscode'){
+            const fileId = msg.id;
+            if(editors[fileId]){
+                const editor = editors[fileId].editor;
+                const model = editor.getModel();
+                const currentValue = model.getValue();
+                if(currentValue !== msg.text){
+                    // Prevent triggering onDidChangeModelContent
+                    editor.pushUndoStop();
+                    model.pushEditOperations([], [{range: model.getFullModelRange(), text: msg.text}], ()=>null);
+                    editor.pushUndoStop();
+                }
+            } else {
+                createWindow(msg.id,'Untitled',msg.text);
             }
         }
     });

@@ -3,24 +3,19 @@ const path = require('path');
 const fs = require('fs');
 
 let panel = null;
-let manuallyClosed = false; // Flag: panel closed by user
+let manuallyClosed = false;
 
 function activate(context) {
 
   async function createMonacoWindow(fileUri) {
-    if (manuallyClosed) return; // If the panel was closed by the user, do not create a new one
+    if (manuallyClosed) return;
 
     const fileName = path.basename(fileUri.fsPath || 'Untitled');
     let fileText = '';
 
     try {
-      if (fileUri.scheme === 'untitled') {
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
-        fileText = doc ? doc.getText() : '';
-      } else {
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
-        fileText = doc ? doc.getText() : fs.readFileSync(fileUri.fsPath, 'utf8');
-      }
+      const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
+      fileText = doc ? doc.getText() : '';
     } catch (error) {
       vscode.window.showErrorMessage(`Error opening file: ${error.message}`);
       return;
@@ -29,64 +24,59 @@ function activate(context) {
     if (!panel) {
       panel = vscode.window.createWebviewPanel(
         'floatingMonacoEditor',
-        "Windows",
+        'Windows',
         vscode.ViewColumn.One,
-        { enableScripts: true, retainContextWhenHidden: true }
+        {
+          enableScripts: true,
+          retainContextWhenHidden: true
+        }
       );
 
       panel.onDidDispose(() => {
         panel = null;
-        manuallyClosed = true; // The user closed the panel
+        manuallyClosed = true;
       });
 
-      const htmlPath = vscode.Uri.file(path.join(context.extensionPath, 'src', 'webview.html'));
+      const htmlPath = vscode.Uri.file(
+        path.join(context.extensionPath, 'src', 'webview.html')
+      );
 
-      fs.readFile(htmlPath.fsPath, 'utf8', (err, data) => {
-        if (err) {
-          vscode.window.showErrorMessage("Error loading webview HTML: " + err.message);
-          return;
-        }
+      panel.webview.html = fs.readFileSync(htmlPath.fsPath, 'utf8');
 
-        panel.webview.html = data;
-
-        // Add all open documents to the webview
-        vscode.workspace.textDocuments.forEach(doc => {
-          panel.webview.postMessage({
-            type: 'init',
-            id: doc.uri.toString(),
-            name: path.basename(doc.uri.fsPath || 'Untitled'),
-            text: doc.getText()
-          });
+      // Send all currently opened documents
+      vscode.workspace.textDocuments.forEach(doc => {
+        panel.webview.postMessage({
+          type: 'init',
+          id: doc.uri.toString(),
+          name: path.basename(doc.uri.fsPath || 'Untitled'),
+          text: doc.getText()
         });
       });
 
-      // Handle messages from the webview
+      // Messages FROM webview (Monaco → VS Code)
       panel.webview.onDidReceiveMessage(message => {
-        if (message.type === 'edit') {
-          try {
-            const uri = vscode.Uri.parse(message.id);
-            const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
-            if (doc) {
-              const edit = new vscode.WorkspaceEdit();
-              const fullRange = new vscode.Range(
-                doc.positionAt(0),
-                doc.positionAt(doc.getText().length)
-              );
-              edit.replace(uri, fullRange, message.text);
-              vscode.workspace.applyEdit(edit); // Mark the document as dirty in VS Code
-            }
-          } catch (err) {
-            vscode.window.showErrorMessage(`Error editing file: ${err.message}`);
-          }
+        if (message.type === 'edit' && message.source === 'monaco') {
+          const uri = vscode.Uri.parse(message.id);
+          const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+          if (!doc) return;
+
+          const edit = new vscode.WorkspaceEdit();
+          const fullRange = new vscode.Range(
+            doc.positionAt(0),
+            doc.positionAt(doc.getText().length)
+          );
+
+          edit.replace(uri, fullRange, message.text);
+          vscode.workspace.applyEdit(edit);
         }
       });
 
-      const sendTheme = () => { panel?.webview.postMessage({ type: 'themeColors' }); };
+      // Theme sync
+      const sendTheme = () => panel?.webview.postMessage({ type: 'themeColors' });
       sendTheme();
       vscode.window.onDidChangeActiveColorTheme(sendTheme);
 
     } else {
-      // If the panel already exists, just add the file
       panel.webview.postMessage({
         type: 'init',
         id: fileUri.toString(),
@@ -96,30 +86,44 @@ function activate(context) {
     }
   }
 
-  // Command to manually open the webview
-  const disposable = vscode.commands.registerCommand('extension.openWindows', () => {
-    manuallyClosed = false; // The user explicitly opened the panel
-    const activeEditor = vscode.window.activeTextEditor;
-    if (activeEditor) createMonacoWindow(activeEditor.document.uri);
-  });
-  context.subscriptions.push(disposable);
+  // Manual command
+  context.subscriptions.push(
+    vscode.commands.registerCommand('extension.openWindows', () => {
+      manuallyClosed = false;
+      const editor = vscode.window.activeTextEditor;
+      if (editor) createMonacoWindow(editor.document.uri);
+    })
+  );
 
-  // Auto-opening for the active editor
+  // Auto-open
   vscode.window.onDidChangeActiveTextEditor(editor => {
     if (editor && !panel) createMonacoWindow(editor.document.uri);
   });
 
-  // New files created
-  vscode.workspace.onDidCreateFiles(e => e.files.forEach(uri => createMonacoWindow(uri)));
+  // Document opened
+  vscode.workspace.onDidOpenTextDocument(doc => {
+    createMonacoWindow(doc.uri);
+  });
 
-  // Documents opened
-  vscode.workspace.onDidOpenTextDocument(doc => createMonacoWindow(doc.uri));
-
-  // Files closed
+  // Document closed
   vscode.workspace.onDidCloseTextDocument(doc => {
-    if (panel) {
-      panel.webview.postMessage({ type: 'close', id: doc.uri.toString() });
-    }
+    panel?.webview.postMessage({
+      type: 'close',
+      id: doc.uri.toString()
+    });
+  });
+
+  // 🔥 VS CODE → MONACO SYNC 🔥
+  vscode.workspace.onDidChangeTextDocument(e => {
+    if (!panel) return;
+
+    // Send update only if source is NOT monaco to avoid loop
+    panel.webview.postMessage({
+      type: 'update',
+      id: e.document.uri.toString(),
+      text: e.document.getText(),
+      source: 'vscode'
+    });
   });
 }
 
