@@ -4,6 +4,7 @@ const fs = require('fs');
 
 let panel = null;
 let manuallyClosed = false;
+let typingTimer = null;
 
 function activate(context) {
   async function createMonacoWindow(fileUri) {
@@ -68,7 +69,6 @@ function activate(context) {
       sendTheme();
       vscode.window.onDidChangeActiveColorTheme(sendTheme);
 
-      // Show success message after everything is loaded
       vscode.window.showInformationMessage('Windows extension has been successfully loaded.');
     } else {
       panel.webview.postMessage({
@@ -104,12 +104,18 @@ function activate(context) {
 
   vscode.workspace.onDidChangeTextDocument(e => {
     if (!panel) return;
-    panel.webview.postMessage({
-      type: 'update',
-      id: e.document.uri.toString(),
-      text: e.document.getText(),
-      source: 'vscode'
-    });
+
+    clearTimeout(typingTimer);
+
+    typingTimer = setTimeout(() => {
+      const text = e.document.getText();
+      panel.webview.postMessage({
+        type: 'update',
+        id: e.document.uri.toString(),
+        text: text,
+        source: 'vscode'
+      });
+    }, 300);
   });
 
   vscode.window.withProgress(
