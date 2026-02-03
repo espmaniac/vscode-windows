@@ -6,7 +6,6 @@ let panel = null;
 let manuallyClosed = false;
 
 function activate(context) {
-
   async function createMonacoWindow(fileUri) {
     if (manuallyClosed) return;
 
@@ -69,6 +68,8 @@ function activate(context) {
       sendTheme();
       vscode.window.onDidChangeActiveColorTheme(sendTheme);
 
+      // Show success message after everything is loaded
+      vscode.window.showInformationMessage('Windows extension has been successfully loaded.');
     } else {
       panel.webview.postMessage({
         type: 'init',
@@ -82,8 +83,7 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('extension.openWindows', () => {
       manuallyClosed = false;
-      const editor = vscode.window.activeTextEditor;
-      if (editor) createMonacoWindow(editor.document.uri);
+      vscode.workspace.textDocuments.forEach(doc => createMonacoWindow(doc.uri));
     })
   );
 
@@ -111,6 +111,19 @@ function activate(context) {
       source: 'vscode'
     });
   });
+
+  vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Loading Monaco Editor...",
+      cancellable: false
+    },
+    async (progress) => {
+      progress.report({ increment: 0 });
+      vscode.workspace.textDocuments.forEach(doc => createMonacoWindow(doc.uri));
+      progress.report({ increment: 100 });
+    }
+  );
 }
 
 function deactivate() {}
@@ -163,7 +176,6 @@ function zoomAt(cx, cy, nextZoom) {
 require.config({ paths: { vs: '${vsUri}' } });
 
 require(['vs/editor/editor.main'], () => {
-
 function makeDraggable(win, title) {
   let dragging = false, startX, startY, startLeft, startTop;
   title.addEventListener('mousedown', e => {
