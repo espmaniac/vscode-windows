@@ -5,6 +5,8 @@ const fs = require('fs');
 let panel = null;
 let manuallyClosed = false;
 let typingTimer = null;
+let monacoMessageTimer = null;
+let lastText = '';
 
 function activate(context) {
   async function createMonacoWindow(fileUri) {
@@ -54,14 +56,19 @@ function activate(context) {
           const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
           if (!doc) return;
 
-          const edit = new vscode.WorkspaceEdit();
-          const fullRange = new vscode.Range(
-            doc.positionAt(0),
-            doc.positionAt(doc.getText().length)
-          );
+          clearTimeout(monacoMessageTimer);
 
-          edit.replace(uri, fullRange, message.text);
-          vscode.workspace.applyEdit(edit);
+          monacoMessageTimer = setTimeout(() => {
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = new vscode.Range(
+              doc.positionAt(0),
+              doc.positionAt(doc.getText().length)
+            );
+
+            edit.replace(uri, fullRange, message.text);
+            vscode.workspace.applyEdit(edit);
+            lastText = message.text;
+          }, 300);
         }
       });
 
@@ -109,12 +116,15 @@ function activate(context) {
 
     typingTimer = setTimeout(() => {
       const text = e.document.getText();
-      panel.webview.postMessage({
-        type: 'update',
-        id: e.document.uri.toString(),
-        text: text,
-        source: 'vscode'
-      });
+      if (text !== lastText) {
+        panel.webview.postMessage({
+          type: 'update',
+          id: e.document.uri.toString(),
+          text: text,
+          source: 'vscode'
+        });
+        lastText = text;
+      }
     }, 300);
   });
 
@@ -131,6 +141,7 @@ function activate(context) {
     }
   );
 }
+
 
 function deactivate() {}
 
