@@ -21,5 +21,9 @@
   },
   "scripts": {
     "start": "echo Run F5 in VS Code to debug extension"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/espmaniac/vscode-windows"
   }
 }
