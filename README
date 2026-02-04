@@ -1,0 +1,46 @@
+<table>
+  <tr>
+    <td><img src="icon.png" width="256" height="256" alt="vscode-windows icon"></td>
+    <td>
+      <h1>vscode-windows</h1>
+      <p><strong>vscode-windows</strong> is a VSCode extension that lets you open multiple <strong>floating Monaco editors</strong> in a single panel. Each editor window is draggable, resizable, and supports zooming and panning across the workspace.</p>
+      <blockquote>
+        ⚠️ <strong>Important:</strong> These are <strong>Monaco editors embedded in a webview</strong>, not native VSCode editors. You <strong>cannot apply your VSCode theme</strong> fully, and some editor features/settings may not work. The extension only approximates the VSCode look.
+      </blockquote>
+    </td>
+  </tr>
+</table>
+
+## Features
+
+- Multiple floating editor windows in one panel  
+- Draggable and resizable windows  
+- Pan and zoom workspace with mouse or keyboard (`Alt + +`, `-`, `0`)  
+- Automatic language detection based on file extension  
+- Real-time synchronization with VSCode documents  
+- Undo/redo within each Monaco editor  
+
+## How it Works
+
+- The extension creates a **webview panel** containing Monaco editors.  
+- Each editor is **independent** but updates are sent to the VSCode workspace in real-time.  
+- Floating editors are **confined to the webview** and cannot become native VSCode tabs.  
+
+## Limitations
+
+- You **cannot fully apply VSCode themes or color customizations**; the extension approximates colors using CSS variables.  
+- Editors do not support all VSCode extensions or editor settings.  
+- Floating editors exist only inside the webview panel.  
+
+## Commands
+
+- `Open Windows`: Opens the floating Monaco window panel for the active editor.  
+
+## Usage
+
+1. Install the extension.  
+2. Open a file in VSCode.  
+3. Run the command **`Open Windows`** from the Command Palette (Ctrl+Shift+P / Cmd+Shift+P).  
+4. Drag, resize, and edit multiple floating Monaco windows simultaneously.
+
+<img src="screenshot.png" alt="Screenshot" width="1280">
