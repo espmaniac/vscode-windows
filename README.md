@@ -42,3 +42,5 @@
 2. Open a file in VSCode.  
 3. Run the command **`Open Windows`** from the Command Palette (Ctrl+Shift+P / Cmd+Shift+P).  
 4. Drag, resize, and edit multiple floating Monaco windows simultaneously.
+
+<img src="screenshot.png" alt="Screenshot" width="1280">
