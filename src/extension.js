@@ -70,6 +70,29 @@ function activate(context) {
             lastText = message.text;
           }, 300);
         }
+
+        if (message.type === 'requestCompletions') {
+          (async () => {
+            try {
+              const uri = vscode.Uri.parse(message.id);
+              const pos = new vscode.Position(Math.max(0, message.position.lineNumber - 1), Math.max(0, message.position.column - 1));
+              const list = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', uri, pos, message.triggerCharacter);
+              const items = (list && list.items) ? list.items : (Array.isArray(list) ? list : []);
+              panel.webview.postMessage({
+                type: 'completions',
+                id: message.id,
+                items: items
+              });
+            } catch (err) {
+              console.error('Error requesting completions:', err);
+              panel.webview.postMessage({
+                type: 'completions',
+                id: message.id,
+                items: []
+              });
+            }
+          })();
+        }
       });
 
       const sendTheme = () => panel?.webview.postMessage({ type: 'themeColors' });
@@ -142,7 +165,6 @@ function activate(context) {
   );
 }
 
-
 function deactivate() {}
 
 function getWebviewHtml(context, webview) {
@@ -178,6 +200,15 @@ let windowCount = 0, zIndex = 1, panX = 0, panY = 0, zoom = 1;
 const MIN_ZOOM = 0.3, MAX_ZOOM = 2.5, ZOOM_STEP = 0.1, MIN_WIDTH = 100, MIN_HEIGHT = 50;
 const workspace = document.getElementById('workspace');
 const editors = {};
+
+const KEEP_TEMP_PROVIDER_MS = 10000;
+const pendingCompletions = {};
+const registeredProviders = {};
+const suppressOnType = {};
+const activeTempProvider = {};
+const completionPressCount = {};
+const lastShownCompletions = {};
+let activeFileId = null;
 
 function updateTransform() { workspace.style.transform = \`translate(\${panX}px,\${panY}px) scale(\${zoom})\`; }
 
@@ -248,6 +279,49 @@ function getLanguageForFile(fileName) {
   return 'plaintext';
 }
 
+function ensureProviderForLanguage(lang) {
+  if (registeredProviders[lang]) return;
+  registeredProviders[lang] = true;
+
+  monaco.languages.registerCompletionItemProvider(lang, {
+    provideCompletionItems: function(model, position, context) {
+      const fid = model.uri.toString();
+
+      if (activeTempProvider[fid]) {
+        return { suggestions: [] };
+      }
+
+      try {
+        const TriggerKind = monaco.languages.CompletionTriggerKind;
+        if (context && context.triggerKind === TriggerKind.TriggerCharacter && suppressOnType[fid]) {
+          delete suppressOnType[fid];
+          return { suggestions: [] };
+        }
+      } catch (e) {}
+
+      const items = pendingCompletions[fid];
+      if (!items || items.length === 0) return { suggestions: [] };
+
+      delete pendingCompletions[fid];
+
+      const word = model.getWordUntilPosition(position);
+      const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+
+      const suggestions = items.map(it => ({
+        label: it.label,
+        kind: (typeof it.kind === 'number') ? it.kind : monaco.languages.CompletionItemKind.Text,
+        documentation: it.documentation || it.detail || '',
+        insertText: (typeof it.insertText === 'string') ? it.insertText : (it.text || it.label || ''),
+        range: range,
+        sortText: it.sortText,
+        filterText: it.filterText
+      }));
+
+      return { suggestions };
+    }
+  });
+}
+
 function createWindow(fileId, fileName, initialText) {
   if (editors[fileId]) return;
 
@@ -264,6 +338,7 @@ function createWindow(fileId, fileName, initialText) {
 
   const editorEl = document.createElement('div');
   editorEl.className = 'editor';
+  editorEl.tabIndex = 0;
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'resize-handle';
@@ -273,19 +348,43 @@ function createWindow(fileId, fileName, initialText) {
   win.appendChild(resizeHandle);
   workspace.appendChild(win);
 
+  const language = getLanguageForFile(fileName);
+
+  try {
+    const existingModel = monaco.editor.getModel(monaco.Uri.parse(fileId));
+    if (existingModel) {
+      try { existingModel.dispose(); } catch (e) { console.warn('Failed to dispose existing model', e); }
+    }
+  } catch (e) {}
+
+  const model = monaco.editor.createModel(initialText, language, monaco.Uri.parse(fileId));
   const editor = monaco.editor.create(editorEl, {
-    value: initialText,
-    language: getLanguageForFile(fileName),
+    model: model,
     automaticLayout: true
   });
 
   applyVSCodeTheme();
+  ensureProviderForLanguage(language);
 
   editor.onDidChangeModelContent(() => {
     vscode.postMessage({ type: 'edit', id: fileId, text: editor.getValue(), source: 'monaco' });
   });
 
-  editors[fileId] = { editor, win };
+  try {
+    editor.onDidFocusEditorWidget(() => {
+      activeFileId = fileId;
+      editors[fileId] && (editors[fileId].win.style.boxShadow = '0 8px 20px rgba(0, 0, 0, 0.8)');
+    });
+    editor.onDidBlurEditorWidget(() => {
+      if (activeFileId === fileId) activeFileId = null;
+      editors[fileId] && (editors[fileId].win.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.6)');
+    });
+  } catch (e) {
+    editorEl.addEventListener('focusin', () => { activeFileId = fileId; editors[fileId] && (editors[fileId].win.style.boxShadow = '0 8px 20px rgba(0, 0, 0, 0.8)'); });
+    editorEl.addEventListener('focusout', () => { if (activeFileId === fileId) activeFileId = null; editors[fileId] && (editors[fileId].win.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.6)'); });
+  }
+
+  editors[fileId] = { editor, win, model, language };
   makeDraggable(win, title);
 
   resizeHandle.addEventListener('mousedown', e => {
@@ -311,14 +410,50 @@ function createWindow(fileId, fileName, initialText) {
   win.addEventListener('mousedown', () => win.style.zIndex = ++zIndex);
 }
 
+document.addEventListener('keydown', e => {
+  const isCtrlSpace = (e.ctrlKey || e.metaKey) && (e.code === 'Space' || e.key === ' ');
+  if (!isCtrlSpace) return;
+
+  e.preventDefault();
+
+  if (!activeFileId) return;
+  const edWrap = editors[activeFileId];
+  if (!edWrap) return;
+  const pos = edWrap.editor.getPosition();
+  if (!pos) return;
+
+  completionPressCount[activeFileId] = (completionPressCount[activeFileId] || 0) + 1;
+  const pressCount = completionPressCount[activeFileId];
+
+  if (pressCount % 2 === 1) {
+    vscode.postMessage({
+      type: 'requestCompletions',
+      id: activeFileId,
+      position: pos
+    });
+  } else {
+    edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+  }
+}, true);
+
 window.addEventListener('message', e => {
   const msg = e.data;
   if (msg.type === 'init') createWindow(msg.id, msg.name, msg.text);
   if (msg.type === 'themeColors') applyVSCodeTheme();
   if (msg.type === 'close' && editors[msg.id]) {
-    editors[msg.id].editor.dispose();
-    editors[msg.id].win.remove();
-    delete editors[msg.id];
+    try {
+      const ed = editors[msg.id];
+      try { ed.editor.dispose(); } catch (e) { console.warn('Failed to dispose editor', e); }
+      try { if (ed.model) ed.model.dispose(); } catch (e) { console.warn('Failed to dispose model', e); }
+      ed.win.remove();
+    } catch (err) {
+      console.error('Error while closing editor for', msg.id, err);
+    } finally {
+      delete editors[msg.id];
+      delete completionPressCount[msg.id];
+      delete lastShownCompletions[msg.id];
+      if (activeFileId === msg.id) activeFileId = null;
+    }
   }
   if (msg.type === 'update' && msg.source === 'vscode') {
     const ed = editors[msg.id];
@@ -328,6 +463,81 @@ window.addEventListener('message', e => {
       ed.editor.pushUndoStop();
       model.pushEditOperations([], [{ range: model.getFullModelRange(), text: msg.text }], () => null);
       ed.editor.pushUndoStop();
+    }
+  }
+
+  if (msg.type === 'completions') {
+    const newItems = (msg.items || []).map(i => {
+      return {
+        label: i.label,
+        insertText: (i.insertText || (i.textEdit && i.textEdit.newText) || i.text) || i.label,
+        kind: i.kind,
+        documentation: (i.documentation && (typeof i.documentation === 'string' ? i.documentation : i.documentation.value)) || i.detail || '',
+        sortText: i.sortText,
+        filterText: i.filterText
+      };
+    });
+
+    const edWrap = editors[msg.id];
+    if (edWrap) {
+      const fid = msg.id;
+      const pressCount = completionPressCount[fid] || 1;
+
+      let itemsToShow = newItems;
+
+      if (pressCount >= 3) {
+        const lastItems = lastShownCompletions[fid] || [];
+        const lastLabels = new Set(lastItems.map(i => i.label));
+        itemsToShow = newItems.filter(item => !lastLabels.has(item.label));
+      }
+
+      lastShownCompletions[fid] = newItems;
+
+      if (itemsToShow.length > 0 || pressCount === 1) {
+        activeTempProvider[fid] = true;
+
+        let tempProvider = null;
+        try {
+          tempProvider = monaco.languages.registerCompletionItemProvider(edWrap.language, {
+            provideCompletionItems: function(model, position) {
+              try {
+                if (model.uri.toString() !== fid) return { suggestions: [] };
+
+                const word = model.getWordUntilPosition(position);
+                const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+                const suggestions = itemsToShow.map(it => ({
+                  label: it.label,
+                  kind: (typeof it.kind === 'number') ? it.kind : monaco.languages.CompletionItemKind.Text,
+                  documentation: it.documentation || '',
+                  insertText: (typeof it.insertText === 'string') ? it.insertText : it.label,
+                  range: range,
+                  sortText: it.sortText,
+                  filterText: it.filterText
+                }));
+
+                suppressOnType[fid] = true;
+                setTimeout(() => { if (suppressOnType[fid]) delete suppressOnType[fid]; }, 900);
+
+                return { suggestions };
+              } catch (err) {
+                return { suggestions: [] };
+              }
+            }
+          });
+        } catch (err) {
+          console.error('Temp provider registration failed', err);
+          delete activeTempProvider[fid];
+        }
+
+        edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+
+        setTimeout(() => {
+          try { if (tempProvider) tempProvider.dispose(); } catch (e) {}
+          delete activeTempProvider[fid];
+        }, KEEP_TEMP_PROVIDER_MS);
+      } else {
+        edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+      }
     }
   }
 });
