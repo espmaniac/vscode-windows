@@ -205,10 +205,7 @@ const KEEP_TEMP_PROVIDER_MS = 10000;
 const pendingCompletions = {};
 const registeredProviders = {};
 const suppressOnType = {};
-const activeTempProvider = {};
-const completionPressCount = {};
-const lastShownCompletions = {};
-let activeFileId = null;
+let activeCompletionProvider = null;
 
 function updateTransform() { workspace.style.transform = \`translate(\${panX}px,\${panY}px) scale(\${zoom})\`; }
 
@@ -286,19 +283,7 @@ function ensureProviderForLanguage(lang) {
   monaco.languages.registerCompletionItemProvider(lang, {
     provideCompletionItems: function(model, position, context) {
       const fid = model.uri.toString();
-
-      if (activeTempProvider[fid]) {
-        return { suggestions: [] };
-      }
-
-      try {
-        const TriggerKind = monaco.languages.CompletionTriggerKind;
-        if (context && context.triggerKind === TriggerKind.TriggerCharacter && suppressOnType[fid]) {
-          delete suppressOnType[fid];
-          return { suggestions: [] };
-        }
-      } catch (e) {}
-
+      
       const items = pendingCompletions[fid];
       if (!items || items.length === 0) return { suggestions: [] };
 
@@ -422,18 +407,15 @@ document.addEventListener('keydown', e => {
   const pos = edWrap.editor.getPosition();
   if (!pos) return;
 
-  completionPressCount[activeFileId] = (completionPressCount[activeFileId] || 0) + 1;
-  const pressCount = completionPressCount[activeFileId];
-
-  if (pressCount % 2 === 1) {
+  if (!pendingCompletions[activeFileId] || pendingCompletions[activeFileId].length === 0) {
     vscode.postMessage({
       type: 'requestCompletions',
       id: activeFileId,
       position: pos
     });
-  } else {
-    edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
   }
+
+  edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
 }, true);
 
 window.addEventListener('message', e => {
@@ -450,8 +432,6 @@ window.addEventListener('message', e => {
       console.error('Error while closing editor for', msg.id, err);
     } finally {
       delete editors[msg.id];
-      delete completionPressCount[msg.id];
-      delete lastShownCompletions[msg.id];
       if (activeFileId === msg.id) activeFileId = null;
     }
   }
@@ -481,63 +461,44 @@ window.addEventListener('message', e => {
     const edWrap = editors[msg.id];
     if (edWrap) {
       const fid = msg.id;
-      const pressCount = completionPressCount[fid] || 1;
 
-      let itemsToShow = newItems;
-
-      if (pressCount >= 3) {
-        const lastItems = lastShownCompletions[fid] || [];
-        const lastLabels = new Set(lastItems.map(i => i.label));
-        itemsToShow = newItems.filter(item => !lastLabels.has(item.label));
-      }
-
-      lastShownCompletions[fid] = newItems;
-
-      if (itemsToShow.length > 0 || pressCount === 1) {
-        activeTempProvider[fid] = true;
-
-        let tempProvider = null;
+      if (activeCompletionProvider) {
         try {
-          tempProvider = monaco.languages.registerCompletionItemProvider(edWrap.language, {
-            provideCompletionItems: function(model, position) {
-              try {
-                if (model.uri.toString() !== fid) return { suggestions: [] };
-
-                const word = model.getWordUntilPosition(position);
-                const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
-                const suggestions = itemsToShow.map(it => ({
-                  label: it.label,
-                  kind: (typeof it.kind === 'number') ? it.kind : monaco.languages.CompletionItemKind.Text,
-                  documentation: it.documentation || '',
-                  insertText: (typeof it.insertText === 'string') ? it.insertText : it.label,
-                  range: range,
-                  sortText: it.sortText,
-                  filterText: it.filterText
-                }));
-
-                suppressOnType[fid] = true;
-                setTimeout(() => { if (suppressOnType[fid]) delete suppressOnType[fid]; }, 900);
-
-                return { suggestions };
-              } catch (err) {
-                return { suggestions: [] };
-              }
-            }
-          });
+          activeCompletionProvider.dispose();
         } catch (err) {
-          console.error('Temp provider registration failed', err);
-          delete activeTempProvider[fid];
+          console.error('Error disposing previous provider', err);
         }
-
-        edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
-
-        setTimeout(() => {
-          try { if (tempProvider) tempProvider.dispose(); } catch (e) {}
-          delete activeTempProvider[fid];
-        }, KEEP_TEMP_PROVIDER_MS);
-      } else {
-        edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
       }
+
+      activeCompletionProvider = monaco.languages.registerCompletionItemProvider(edWrap.language, {
+        provideCompletionItems: function(model, position) {
+          try {
+            if (model.uri.toString() !== fid) return { suggestions: [] };
+
+            const word = model.getWordUntilPosition(position);
+            const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
+            const suggestions = newItems.map(it => ({
+              label: it.label,
+              kind: (typeof it.kind === 'number') ? it.kind : monaco.languages.CompletionItemKind.Text,
+              documentation: it.documentation || '',
+              insertText: (typeof it.insertText === 'string') ? it.insertText : it.label,
+              range: range,
+              sortText: it.sortText,
+              filterText: it.filterText
+            }));
+
+            suppressOnType[fid] = true;
+            setTimeout(() => { if (suppressOnType[fid]) delete suppressOnType[fid]; }, 900);
+
+            return { suggestions };
+          } catch (err) {
+            console.error('Temp provider error', err);
+            return { suggestions: [] };
+          }
+        }
+      });
+
+      edWrap.editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
     }
   }
 });
