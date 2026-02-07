@@ -197,6 +197,7 @@ border: 1px solid #333; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6); }
 <script>
 const vscode = acquireVsCodeApi();
 let windowCount = 0, zIndex = 1, panX = 0, panY = 0, zoom = 1;
+let isApplyingRemoteUpdate = false;
 const MIN_ZOOM = 0.3, MAX_ZOOM = 2.5, ZOOM_STEP = 0.1, MIN_WIDTH = 100, MIN_HEIGHT = 50;
 const workspace = document.getElementById('workspace');
 const editors = {};
@@ -351,8 +352,15 @@ function createWindow(fileId, fileName, initialText) {
   applyVSCodeTheme();
   ensureProviderForLanguage(language);
 
-  editor.onDidChangeModelContent(() => {
-    vscode.postMessage({ type: 'edit', id: fileId, text: editor.getValue(), source: 'monaco' });
+ editor.onDidChangeModelContent(() => {
+    if (isApplyingRemoteUpdate) return;
+
+    vscode.postMessage({
+      type: 'edit',
+      id: fileId,
+      text: editor.getValue(),
+      source: 'monaco'
+    });
   });
 
   try {
@@ -438,12 +446,27 @@ window.addEventListener('message', e => {
   if (msg.type === 'update' && msg.source === 'vscode') {
     const ed = editors[msg.id];
     if (!ed) return;
-    const model = ed.editor.getModel();
-    if (model.getValue() !== msg.text) {
-      ed.editor.pushUndoStop();
-      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: msg.text }], () => null);
-      ed.editor.pushUndoStop();
-    }
+
+    const editor = ed.editor;
+    const model = editor.getModel();
+    if (!model) return;
+
+    const newText = msg.text;
+    if (model.getValue() === newText) return;
+
+    const selections = editor.getSelections();
+    const scrollTop = editor.getScrollTop();
+    const scrollLeft = editor.getScrollLeft();
+
+    isApplyingRemoteUpdate = true;
+
+    model.setValue(newText);
+
+    if (selections) editor.setSelections(selections);
+    editor.setScrollTop(scrollTop);
+    editor.setScrollLeft(scrollLeft);
+
+    isApplyingRemoteUpdate = false;
   }
 
   if (msg.type === 'completions') {
