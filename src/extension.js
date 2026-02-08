@@ -1,12 +1,13 @@
 const vscode = require('vscode');
 const path = require('path');
-const fs = require('fs');
 
 let panel = null;
 let manuallyClosed = false;
 let typingTimer = null;
 let monacoMessageTimer = null;
-let lastText = '';
+
+// 🔹 per-document last text cache
+const lastTextByUri = new Map();
 
 function activate(context) {
   async function createMonacoWindow(fileUri) {
@@ -16,7 +17,9 @@ function activate(context) {
     let fileText = '';
 
     try {
-      const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
+      const doc = vscode.workspace.textDocuments.find(
+        d => d.uri.toString() === fileUri.toString()
+      );
       fileText = doc ? doc.getText() : '';
     } catch (error) {
       vscode.window.showErrorMessage(`Error opening file: ${error.message}`);
@@ -48,17 +51,23 @@ function activate(context) {
           name: path.basename(doc.uri.fsPath || 'Untitled'),
           text: doc.getText()
         });
+        lastTextByUri.set(doc.uri.toString(), doc.getText());
       });
 
       panel.webview.onDidReceiveMessage(message => {
+        // 🔹 Monaco → VSCode
         if (message.type === 'edit' && message.source === 'monaco') {
           const uri = vscode.Uri.parse(message.id);
-          const doc = vscode.workspace.textDocuments.find(d => d.uri.toString() === uri.toString());
+          const doc = vscode.workspace.textDocuments.find(
+            d => d.uri.toString() === uri.toString()
+          );
           if (!doc) return;
 
           clearTimeout(monacoMessageTimer);
 
-          monacoMessageTimer = setTimeout(() => {
+          monacoMessageTimer = setTimeout(async () => {
+            if (doc.getText() === message.text) return;
+
             const edit = new vscode.WorkspaceEdit();
             const fullRange = new vscode.Range(
               doc.positionAt(0),
@@ -66,25 +75,38 @@ function activate(context) {
             );
 
             edit.replace(uri, fullRange, message.text);
-            vscode.workspace.applyEdit(edit);
-            lastText = message.text;
+            await vscode.workspace.applyEdit(edit);
+
+            lastTextByUri.set(message.id, message.text);
           }, 300);
         }
 
+        // 🔹 Completion request
         if (message.type === 'requestCompletions') {
           (async () => {
             try {
               const uri = vscode.Uri.parse(message.id);
-              const pos = new vscode.Position(Math.max(0, message.position.lineNumber - 1), Math.max(0, message.position.column - 1));
-              const list = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', uri, pos, message.triggerCharacter);
-              const items = (list && list.items) ? list.items : (Array.isArray(list) ? list : []);
+              const pos = new vscode.Position(
+                Math.max(0, message.position.lineNumber - 1),
+                Math.max(0, message.position.column - 1)
+              );
+
+              const list = await vscode.commands.executeCommand(
+                'vscode.executeCompletionItemProvider',
+                uri,
+                pos,
+                message.triggerCharacter
+              );
+
+              const items = list?.items || (Array.isArray(list) ? list : []);
+
               panel.webview.postMessage({
                 type: 'completions',
                 id: message.id,
-                items: items
+                items
               });
             } catch (err) {
-              console.error('Error requesting completions:', err);
+              console.error('Completion error:', err);
               panel.webview.postMessage({
                 type: 'completions',
                 id: message.id,
@@ -95,11 +117,12 @@ function activate(context) {
         }
       });
 
-      const sendTheme = () => panel?.webview.postMessage({ type: 'themeColors' });
+      const sendTheme = () =>
+        panel?.webview.postMessage({ type: 'themeColors' });
+
       sendTheme();
       vscode.window.onDidChangeActiveColorTheme(sendTheme);
 
-      vscode.window.showInformationMessage('Windows extension has been successfully loaded.');
     } else {
       panel.webview.postMessage({
         type: 'init',
@@ -107,13 +130,17 @@ function activate(context) {
         name: fileName,
         text: fileText
       });
+
+      lastTextByUri.set(fileUri.toString(), fileText);
     }
   }
 
   context.subscriptions.push(
     vscode.commands.registerCommand('extension.openWindows', () => {
       manuallyClosed = false;
-      vscode.workspace.textDocuments.forEach(doc => createMonacoWindow(doc.uri));
+      vscode.workspace.textDocuments.forEach(doc =>
+        createMonacoWindow(doc.uri)
+      );
     })
   );
 
@@ -130,23 +157,28 @@ function activate(context) {
       type: 'close',
       id: doc.uri.toString()
     });
+    lastTextByUri.delete(doc.uri.toString());
   });
 
+  // 🔹 VSCode → Monaco
   vscode.workspace.onDidChangeTextDocument(e => {
     if (!panel) return;
 
     clearTimeout(typingTimer);
 
     typingTimer = setTimeout(() => {
+      const uri = e.document.uri.toString();
       const text = e.document.getText();
+      const lastText = lastTextByUri.get(uri);
+
       if (text !== lastText) {
         panel.webview.postMessage({
           type: 'update',
-          id: e.document.uri.toString(),
-          text: text,
+          id: uri,
+          text,
           source: 'vscode'
         });
-        lastText = text;
+        lastTextByUri.set(uri, text);
       }
     }, 300);
   });
@@ -154,12 +186,14 @@ function activate(context) {
   vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
-      title: "Loading Monaco Editor...",
+      title: 'Loading Monaco Editor...',
       cancellable: false
     },
-    async (progress) => {
+    async progress => {
       progress.report({ increment: 0 });
-      vscode.workspace.textDocuments.forEach(doc => createMonacoWindow(doc.uri));
+      vscode.workspace.textDocuments.forEach(doc =>
+        createMonacoWindow(doc.uri)
+      );
       progress.report({ increment: 100 });
     }
   );
