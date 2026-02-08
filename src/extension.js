@@ -44,6 +44,7 @@ function activate(context) {
 
       panel.webview.html = getWebviewHtml(context, panel.webview);
 
+      // 🔹 initialize all loaded documents
       vscode.workspace.textDocuments.forEach(doc => {
         panel.webview.postMessage({
           type: 'init',
@@ -122,7 +123,6 @@ function activate(context) {
 
       sendTheme();
       vscode.window.onDidChangeActiveColorTheme(sendTheme);
-
     } else {
       panel.webview.postMessage({
         type: 'init',
@@ -135,12 +135,24 @@ function activate(context) {
     }
   }
 
+  // 🔹 function to open all visible editor tabs
+  function syncVisibleEditors() {
+    vscode.window.visibleTextEditors.forEach(editor => {
+      if (editor.document && editor.document.uri.scheme === 'file') {
+        createMonacoWindow(editor.document.uri);
+      }
+    });
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand('extension.openWindows', () => {
       manuallyClosed = false;
+      // 🔹 open all loaded documents
       vscode.workspace.textDocuments.forEach(doc =>
         createMonacoWindow(doc.uri)
       );
+      // 🔹 open all visible editor tabs
+      syncVisibleEditors();
     })
   );
 
@@ -160,7 +172,7 @@ function activate(context) {
     lastTextByUri.delete(doc.uri.toString());
   });
 
-  // 🔹 VSCode → Monaco
+  // 🔹 VSCode → Monaco sync
   vscode.workspace.onDidChangeTextDocument(e => {
     if (!panel) return;
 
@@ -183,6 +195,11 @@ function activate(context) {
     }, 300);
   });
 
+  // 🔹 subscribe to changes in visible editors
+  vscode.window.onDidChangeVisibleTextEditors(() => {
+    syncVisibleEditors();
+  });
+
   vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
@@ -194,10 +211,13 @@ function activate(context) {
       vscode.workspace.textDocuments.forEach(doc =>
         createMonacoWindow(doc.uri)
       );
+      // 🔹 sync all visible editors at start
+      syncVisibleEditors();
       progress.report({ increment: 100 });
     }
   );
 }
+
 
 function deactivate() {}
 
