@@ -390,14 +390,13 @@ function createWindow(fileId, fileName, initialText) {
 
   const language = getLanguageForFile(fileName);
 
-  try {
-    const existingModel = monaco.editor.getModel(monaco.Uri.parse(fileId));
-    if (existingModel) {
-      try { existingModel.dispose(); } catch (e) { console.warn('Failed to dispose existing model', e); }
-    }
-  } catch (e) {}
+  const uri = monaco.Uri.parse(fileId);
+  let model = monaco.editor.getModel(uri);
 
-  const model = monaco.editor.createModel(initialText, language, monaco.Uri.parse(fileId));
+  if (!model) {
+    model = monaco.editor.createModel(initialText, language, uri);
+  }
+
   const editor = monaco.editor.create(editorEl, {
     model: model,
     automaticLayout: true
