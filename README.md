@@ -15,7 +15,7 @@
 
 - Multiple floating editor windows in one panel  
 - Draggable and resizable windows  
-- Pan and zoom workspace with mouse or keyboard (`Alt + +`, `-`, `0`)  
+- Pan and zoom the workspace  
 - Automatic language detection based on file extension  
 - Real-time synchronization with VSCode documents  
 - Undo/redo within each Monaco editor  
